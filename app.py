@@ -1,15 +1,15 @@
-﻿import streamlit as st
+import streamlit as st
 import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime, timedelta
-import io
+from datetime import datetime
 import yagmail
+import io
 
-# --- PAGE SETTINGS ---
-st.set_page_config(page_title="CBHI Daily Report", layout="wide")
+# --- 1. PAGE CONFIGURATION ---
+st.set_page_config(page_title="CBHI Daily Report", layout="wide", page_icon="🏥")
 
-# --- LIST OF HEALTH POSTS ---
+# --- 2. CONSTANTS ---
 INSTITUTIONS = [
     "01 Merged Health Post", "02 Densa Zuriya Health Post", 
     "03 Derew Health Post", "04 Wejed Health Post", 
@@ -17,155 +17,168 @@ INSTITUTIONS = [
     "08 Alegeta Health Post", "09 Sensa Health Post"
 ]
 
-# --- CONNECT TO GOOGLE SHEETS ---
-@st.cache_resource
+# --- 3. DATABASE CONNECTION ---
 def connect_to_gsheets():
-    # This connects using the secrets we will set up on Streamlit.com
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
-    client = gspread.authorize(creds)
-    sheet = client.open("CBHI_Data_Database").worksheet("Records")
-    return sheet
-
-# --- MAIN APP LAYOUT ---
-def main():
-    st.title("🏥 CBHI Daily Report Tracking Website")
-
-    # Sidebar Menu
-    menu = st.sidebar.radio("Navigate", ["📝 Data Entry", "📊 Dashboard & Admin", "📤 Upload Excel"])
-
-    # 1. DATA ENTRY PAGE
-    if menu == "📝 Data Entry":
-        st.subheader("Enter Daily Data")
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        # Convert secrets to a dictionary
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
         
-        with st.form("entry_form"):
-            col1, col2 = st.columns(2)
-            reporter_name = col1.text_input("Reporter Full Name (Mandatory)")
-            phone_number = col2.text_input("Phone Number (Mandatory)")
-            
-            report_date = st.date_input("Date of Report", datetime.now())
-            institution = st.selectbox("Health Institution", INSTITUTIONS)
-            
-            st.markdown("---")
-            st.write("**1. Membership Renewal**")
-            c1, c2, c3 = st.columns(3)
-            renew_high = c1.number_input("Higher Paid (Renewal)", min_value=0)
-            renew_med = c2.number_input("Medium Paid (Renewal)", min_value=0)
-            renew_free = c3.number_input("Free (Renewal)", min_value=0)
-            
-            st.write("**2. New Membership**")
-            c4, c5 = st.columns(2)
-            new_high = c4.number_input("Higher Paid (New)", min_value=0)
-            new_med = c5.number_input("Medium Paid (New)", min_value=0)
-            
-            st.write("**3. Financials**")
-            c6, c7 = st.columns(2)
-            collected = c6.number_input("Money Collected (ETB)", min_value=0.0)
-            saved = c7.number_input("Money Saved to Bank (ETB)", min_value=0.0)
-            
-            submitted = st.form_submit_button("Submit Data")
-            
-            if submitted:
-                if not reporter_name or not phone_number:
-                    st.error("Error: You must enter Name and Phone Number.")
-                else:
-                    try:
-                        sheet = connect_to_gsheets()
-                        # Add timestamp
-                        timestamp = str(datetime.now())
-                        row_data = [
-                            str(report_date), reporter_name, phone_number, institution,
-                            renew_high, renew_med, renew_free, new_high, new_med,
-                            collected, saved, timestamp
-                        ]
-                        sheet.append_row(row_data)
-                        st.success("✅ Data successfully sent to database!")
-                    except Exception as e:
-                        st.error(f"Connection Error: {e}")
+        # Connect to the Sheet
+        # IMPORTANT: Make sure your Sheet Name is EXACTLY this:
+        sheet = client.open("CBHI_Data_Database").worksheet("Records")
+        return sheet
+    except gspread.exceptions.SpreadsheetNotFound:
+        st.error("❌ Error: The Google Sheet named 'CBHI_Data_Database' was not found.")
+        return None
+    except Exception as e:
+        st.error(f"❌ Connection Error: {e}")
+        return None
 
-    # 2. ADMIN & DASHBOARD PAGE
-    elif menu == "📊 Dashboard & Admin":
-        st.subheader("Admin Login")
-        user_input = st.sidebar.text_input("Admin Name")
-        pass_input = st.sidebar.text_input("Password", type="password")
+# --- 4. MAIN APP LOGIC ---
+st.title("🏥 CBHI Daily Report Tracking Website")
+
+menu = st.sidebar.selectbox("Navigation Menu", ["📝 Data Entry", "📊 Admin Dashboard", "📤 Bulk Upload"])
+
+# --- DATA ENTRY PAGE ---
+if menu == "📝 Data Entry":
+    st.header("Daily Reporting Form")
+    st.info("Please fill in all mandatory fields marked with (*)")
+
+    with st.form("reporting_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            reporter = st.text_input("Reporter Full Name *")
+            phone = st.text_input("Phone Number *")
+        with col2:
+            inst = st.selectbox("Health Institution", INSTITUTIONS)
+            report_date = st.date_input("Report Date", datetime.now())
+
+        st.divider()
         
-        # Check Login (Using Secrets)
-        if user_input == st.secrets["admin"]["user"] and pass_input == st.secrets["admin"]["password"]:
-            st.success(f"Welcome, {user_input}")
-            
-            # Load Data
-            try:
+        # Thematic Categories
+        st.subheader("Section 1: Membership Renewals")
+        r1, r2, r3 = st.columns(3)
+        ren_high = r1.number_input("Higher Paid (Renewal)", min_value=0, step=1)
+        ren_med = r2.number_input("Medium Paid (Renewal)", min_value=0, step=1)
+        ren_free = r3.number_input("Free (Renewal)", min_value=0, step=1)
+
+        st.subheader("Section 2: New Memberships")
+        n1, n2 = st.columns(2)
+        new_high = n1.number_input("Higher Paid (New)", min_value=0, step=1)
+        new_med = n2.number_input("Medium Paid (New)", min_value=0, step=1)
+
+        st.subheader("Section 3: Financial Totals (ETB)")
+        f1, f2 = st.columns(2)
+        collected = f1.number_input("Total Money Collected", min_value=0.0, format="%.2f")
+        saved = f2.number_input("Total Saved to Bank", min_value=0.0, format="%.2f")
+
+        submitted = st.form_submit_button("🚀 Submit Daily Report")
+
+        if submitted:
+            if not reporter or not phone:
+                st.warning("⚠️ Please enter both your Name and Phone Number to proceed.")
+            else:
                 sheet = connect_to_gsheets()
-                data = sheet.get_all_records()
-                df = pd.DataFrame(data)
+                if sheet:
+                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    new_row = [
+                        str(report_date), reporter, phone, inst, 
+                        ren_high, ren_med, ren_free, 
+                        new_high, new_med, collected, saved, timestamp
+                    ]
+                    sheet.append_row(new_row)
+                    st.success(f"✅ Success! Report for {inst} has been saved.")
+                    st.balloons()
+
+# --- ADMIN DASHBOARD ---
+elif menu == "📊 Admin Dashboard":
+    st.sidebar.markdown("---")
+    admin_user = st.sidebar.text_input("Admin Username")
+    admin_pass = st.sidebar.text_input("Admin Password", type="password")
+
+    if admin_user == st.secrets["admin"]["user"] and admin_pass == st.secrets["admin"]["password"]:
+        st.header("Admin Management Panel")
+        
+        sheet = connect_to_gsheets()
+        if sheet:
+            data = sheet.get_all_records()
+            df = pd.DataFrame(data)
+
+            if not df.empty:
+                # Filtering System
+                st.subheader("Filter & Search Reports")
+                c1, c2 = st.columns(2)
+                selected_inst = c1.multiselect("Filter by Institution", INSTITUTIONS)
                 
-                if not df.empty:
-                    # Filters
-                    st.write("### Filter Reports")
-                    f_inst = st.multiselect("Filter by Institution", INSTITUTIONS)
-                    if f_inst:
-                        df = df[df["Health Institution"].isin(f_inst)]
-                    
-                    st.dataframe(df)
-                    
-                    # Totals
-                    st.write("### Aggregated Totals (Sum)")
-                    numeric_cols = ["Renew (High)", "Renew (Med)", "Renew (Free)", "New (High)", "New (Med)", "Collected (ETB)", "Saved to Bank (ETB)"]
-                    # Ensure columns are numbers
-                    for col in numeric_cols:
-                        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-                        
-                    totals = df[numeric_cols].sum()
-                    st.dataframe(totals.to_frame().T)
+                # Apply filters
+                filtered_df = df.copy()
+                if selected_inst:
+                    filtered_df = filtered_df[filtered_df["Health Institution"].isin(selected_inst)]
+                
+                st.dataframe(filtered_df, use_container_width=True)
 
-                    # Download and Email
-                    col_d1, col_d2 = st.columns(2)
-                    
-                    # Excel Download
-                    buffer = io.BytesIO()
-                    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                        df.to_excel(writer, index=False)
-                    
-                    col_d1.download_button(
-                        label="📥 Download Excel",
-                        data=buffer.getvalue(),
-                        file_name="CBHI_Report.xlsx",
-                        mime="application/vnd.ms-excel"
-                    )
-                    
-                    # Email Feature
-                    if col_d2.button("📧 Send to Melaku"):
-                        try:
-                            yag = yagmail.SMTP(st.secrets["email"]["user"], st.secrets["email"]["password"])
-                            yag.send(
-                                to="melakubelay47@gmail.com",
-                                subject="CBHI Daily Report",
-                                contents="Here is the latest report.",
-                                attachments=io.BytesIO(buffer.getvalue()) # Send the buffer we just created
-                            )
-                            st.success("Email sent!")
-                        except Exception as e:
-                            st.error(f"Email failed. Check App Password settings. Error: {e}")
-                            
-                else:
-                    st.info("No data in the database yet.")
-            except Exception as e:
-                st.error(f"Database Error: {e}")
-        else:
-            st.info("Please login to view reports.")
+                # Summary Section
+                st.subheader("📈 Aggregated Totals")
+                num_cols = ["Renew (High)", "Renew (Med)", "Renew (Free)", "New (High)", "New (Med)", "Collected (ETB)", "Saved to Bank (ETB)"]
+                # Convert columns to numeric for calculation
+                for col in num_cols:
+                    if col in filtered_df.columns:
+                        filtered_df[col] = pd.to_numeric(filtered_df[col], errors='coerce').fillna(0)
+                
+                totals = filtered_df[num_cols].sum().to_frame().T
+                st.table(totals)
 
-    # 3. UPLOAD PAGE
-    elif menu == "📤 Upload Excel":
-        st.subheader("Bulk Upload via Excel")
-        uploaded_file = st.file_uploader("Choose Excel File", type=['xlsx'])
-        if uploaded_file:
-            df_up = pd.read_excel(uploaded_file)
-            st.write(df_up.head())
-            if st.button("Append to Database"):
-                sheet = connect_to_gsheets()
-                sheet.append_rows(df_up.values.tolist())
-                st.success("Uploaded!")
+                # Export and Email
+                st.divider()
+                e1, e2 = st.columns(2)
+                
+                # Download
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    filtered_df.to_excel(writer, index=False, sheet_name='CBHI_Report')
+                
+                e1.download_button(
+                    label="📥 Download as Excel",
+                    data=output.getvalue(),
+                    file_name=f"CBHI_Report_{datetime.now().date()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
 
-if __name__ == "__main__":
-    main()
+                if e2.button("📧 Email Report to Melaku"):
+                    try:
+                        yag = yagmail.SMTP(st.secrets["email"]["user"], st.secrets["email"]["password"])
+                        yag.send(
+                            to="melakubelay47@gmail.com",
+                            subject=f"CBHI Daily Report - {datetime.now().date()}",
+                            contents="Please find the attached CBHI Daily Report Excel file.",
+                            attachments=io.BytesIO(output.getvalue())
+                        )
+                        st.success("📩 Email sent successfully to melakubelay47@gmail.com")
+                    except Exception as e:
+                        st.error(f"Failed to send email: {e}")
+            else:
+                st.info("The database is currently empty.")
+    else:
+        st.warning("🔒 Please enter Admin credentials in the sidebar to view data.")
 
+# --- BULK UPLOAD ---
+elif menu == "📤 Bulk Upload":
+    st.header("Excel Data Import")
+    st.write("Upload an Excel file to add multiple rows at once.")
+    
+    file = st.file_uploader("Choose Excel File", type=["xlsx"])
+    if file:
+        df_upload = pd.read_excel(file)
+        st.write("Preview of data to be uploaded:")
+        st.dataframe(df_upload.head())
+        
+        if st.button("Confirm & Upload to Database"):
+            sheet = connect_to_gsheets()
+            if sheet:
+                # Add a timestamp to the uploaded data
+                df_upload['Timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                sheet.append_rows(df_upload.values.tolist())
+                st.success("✅ Bulk data uploaded successfully!")
