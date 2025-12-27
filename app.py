@@ -3,12 +3,15 @@ import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
+import plotly.express as px
 import io
 
-# --- 1. CONFIGURATION & TARGET DATA ---
-st.set_page_config(page_title="CBHI Tracker Pro", layout="wide", page_icon="📊")
+# --- 1. CONFIGURATION (Admin Control) ---
+st.set_page_config(page_title="CBHI Performance Pro", layout="wide", page_icon="📈")
 
-# Official Plan Data (Targets)
+# The "Keys" for calculation - Admin can see these in the Settings tab
+COLLECTION_KEYS = {"high": 1710, "medium": 1260, "new": 1260}
+
 PLANS = {
     "01 Merged Health Post": {"high": 453, "medium": 551, "free": 474, "new": 251, "total": 1729},
     "02 Densa Zuriya Health Post": {"high": 147, "medium": 316, "free": 155, "new": 0, "total": 618},
@@ -19,107 +22,109 @@ PLANS = {
     "08 Alegeta Health Post": {"high": 217, "medium": 252, "free": 248, "new": 22, "total": 739},
     "09 Sensa Health Post": {"high": 173, "medium": 272, "free": 179, "new": 0, "total": 624}
 }
-INSTITUTIONS = list(PLANS.keys())
 
 def connect_to_gsheets():
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds_dict = dict(st.secrets["gcp_service_account"])
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        client = gspread.authorize(creds)
-        return client.open("CBHI_Data_Database").worksheet("Records")
+        return gspread.authorize(creds).open("CBHI_Data_Database").worksheet("Records")
     except Exception as e:
-        st.error(f"⚠️ Connection Error: {e}")
+        st.error(f"Authentication Error: Check your Secrets configuration.")
         return None
 
-# --- 2. USER INTERFACE ---
-st.title("🏥 CBHI Achievement Tracking System")
-menu = st.sidebar.selectbox("Main Menu", ["📝 Daily Entry", "📊 Performance Dashboard", "⚙️ Admin & Export"])
+# --- 2. NAVIGATION ---
+st.title("🏥 CBHI Smart Performance System")
+menu = st.sidebar.selectbox("Navigate", ["📝 Daily Entry", "📊 Performance Dashboard", "🔒 Admin Control"])
 
-# --- PAGE: DATA ENTRY ---
+# --- PAGE: DAILY ENTRY ---
 if menu == "📝 Daily Entry":
-    st.header("Enter Daily Achievement")
-    with st.container(border=True):
+    st.header("Daily Achievement Entry")
+    with st.form("entry_form"):
         c1, c2 = st.columns(2)
-        reporter = c1.text_input("Staff Name *")
-        phone = c2.text_input("Contact Phone *")
-        inst = st.selectbox("Health Institution", INSTITUTIONS)
-        date_rep = st.date_input("Reporting Date", datetime.now())
+        rep = c1.text_input("Reporter Name")
+        inst = c2.selectbox("Institution", list(PLANS.keys()))
         
-        st.subheader("Membership Counts")
         r1, r2, r3, r4 = st.columns(4)
-        h = r1.number_input("High", min_value=0)
-        m = r2.number_input("Medium", min_value=0)
-        f = r3.number_input("Free", min_value=0)
-        n = r4.number_input("New", min_value=0)
+        h = r1.number_input("High", 0)
+        m = r2.number_input("Medium", 0)
+        f = r3.number_input("Free", 0)
+        n = r4.number_input("New", 0)
         
-        # Calculation: High*1710 + Medium*1260 + New*1260 (Free is 0 ETB)
-        calc_coll = (h * 1710) + (m * 1260) + (n * 1260)
+        calc = (h * COLLECTION_KEYS["high"]) + (m * COLLECTION_KEYS["medium"]) + (n * COLLECTION_KEYS["new"])
+        st.info(f"**Calculated Collection:** {calc:,.2f} ETB")
+        bank = st.number_input("Amount Saved to Bank", 0.0)
         
-        st.divider()
-        st.subheader("Financial Verification")
-        f1, f2 = st.columns(2)
-        f1.metric("Calculated Collection (ETB)", f"{calc_coll:,.2f}")
-        saved = f2.number_input("Amount Saved to Bank (ETB) *", min_value=0.0)
+        if st.form_submit_button("🚀 Submit to Database"):
+            sheet = connect_to_gsheets()
+            if sheet:
+                sheet.append_row([str(datetime.now().date()), rep, "N/A", inst, h, m, f, n, calc, bank, str(datetime.now())])
+                st.success("Data Synced Successfully!")
 
-        if st.button("🚀 Sync Report to Database"):
-            if reporter and phone:
-                sheet = connect_to_gsheets()
-                if sheet:
-                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-                    sheet.append_row([str(date_rep), reporter, phone, inst, h, m, f, n, calc_coll, saved, timestamp])
-                    st.success(f"✅ Data for {inst} has been recorded!")
-                    st.balloons()
-
-# --- PAGE: PERFORMANCE DASHBOARD ---
+# --- PAGE: DASHBOARD (Visuals) ---
 elif menu == "📊 Performance Dashboard":
-    st.header("KPI Achievement Analysis")
     sheet = connect_to_gsheets()
     if sheet:
-        data = sheet.get_all_records()
-        df = pd.DataFrame(data)
-        
+        df = pd.DataFrame(sheet.get_all_records())
         if not df.empty:
-            for col in ["High", "Medium", "Free", "New"]:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-
-            view = st.selectbox("Select View", ["Total Summary"] + INSTITUTIONS)
+            for col in ["High", "Medium", "Free", "New"]: df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             
-            if view == "Total Summary":
-                act = df[["High", "Medium", "Free", "New"]].sum()
-                plan = {k: sum(p[k] for p in PLANS.values()) for k in ["high", "medium", "free", "new"]}
-            else:
-                act = df[df["Health Institution"] == view][["High", "Medium", "Free", "New"]].sum()
-                plan = PLANS[view]
+            # --- TOP LEVEL KPI ---
+            st.subheader("Global Achievement Metrics")
+            m1, m2, m3, m4 = st.columns(4)
+            for i, (lbl, key) in enumerate([("High", "high"), ("Medium", "medium"), ("Free", "free"), ("New", "new")]):
+                act, plan = df[lbl].sum(), sum(p[key] for p in PLANS.values())
+                [m1, m2, m3, m4][i].metric(lbl, f"{int(act)}", f"{(act/plan*100):.1f}% of Plan")
 
-            st.write(f"### Achievement Summary: {view}")
-            cols = st.columns(4)
-            metrics = [("High", "high"), ("Medium", "medium"), ("Free", "free"), ("New", "new")]
-            for i, (label, key) in enumerate(metrics):
-                a_val, p_val = int(act[label]), plan[key]
-                perc = (a_val / p_val * 100) if p_val > 0 else 0
-                cols[i].metric(label, f"{a_val} / {p_val}", f"{perc:.1f}%")
-            
             st.divider()
+
+            # --- VISUAL CHARTS ---
+            col_chart1, col_chart2 = st.columns(2)
             
-            # REVISED MATRIX: Includes Free and Total Calculation (H+M+F+N)
-            st.subheader("Institutional Performance Matrix")
+            # 1. Bar Chart: Performance by Institution
             matrix = []
             for name, p in PLANS.items():
-                i_df = df[df["Health Institution"] == name]
-                i_act = i_df[["High", "Medium", "Free", "New"]].sum()
+                act = df[df["Health Institution"] == name][["High", "Medium", "Free", "New"]].sum().sum()
+                matrix.append({"Institution": name, "Achieved %": round((act/p['total']*100), 2)})
+            
+            fig_bar = px.bar(pd.DataFrame(matrix), x='Institution', y='Achieved %', color='Achieved %',
+                             title="Total Performance by Institution (%)", color_continuous_scale='RdYlGn')
+            col_chart1.plotly_chart(fig_bar, use_container_width=True)
+
+            # 2. Pie Chart: Category Contribution
+            totals = df[["High", "Medium", "Free", "New"]].sum().reset_index()
+            totals.columns = ['Category', 'Total']
+            fig_pie = px.pie(totals, values='Total', names='Category', title="Overall Achievement Distribution", hole=0.4)
+            col_chart2.plotly_chart(fig_pie, use_container_width=True)
+
+# --- PAGE: ADMIN CONTROL (Secure) ---
+elif menu == "🔒 Admin Control":
+    st.header("Administrative Management")
+    pw = st.sidebar.text_input("Enter Admin Password", type="password")
+    
+    if pw == st.secrets["admin"]["password"]:
+        st.success("Admin Access Granted")
+        
+        tab1, tab2 = st.tabs(["⚙️ Performance Keys & Plans", "📥 Data Extraction"])
+        
+        with tab1:
+            st.subheader("Current Performance Indicators (Targets)")
+            st.write("These indicators govern the % calculations in the dashboard.")
+            st.dataframe(pd.DataFrame(PLANS).T)
+            
+            st.subheader("Financial Extraction Keys")
+            st.json(COLLECTION_KEYS)
+            
+        with tab2:
+            st.subheader("Master Data Export")
+            sheet = connect_to_gsheets()
+            if sheet:
+                df_raw = pd.DataFrame(sheet.get_all_records())
+                st.dataframe(df_raw)
                 
-                # Formula: (High + Medium + Free + New) / Total Plan
-                total_achieved = i_act["High"] + i_act["Medium"] + i_act["Free"] + i_act["New"]
-                total_perc = (total_achieved / p["total"] * 100) if p["total"] > 0 else 0
-                
-                matrix.append({
-                    "Health Post": name,
-                    "High (A/P)": f"{int(i_act['High'])}/{p['high']}",
-                    "Medium (A/P)": f"{int(i_act['Medium'])}/{p['medium']}",
-                    "Free (A/P)": f"{int(i_act['Free'])}/{p['free']}",
-                    "New (A/P)": f"{int(i_act['New'])}/{p['new']}",
-                    "Total Perf %": f"{total_perc:.1f}%",
-                    "Status": "🟢 Excellent" if total_perc >= 90 else "🟡 Good" if total_perc >= 50 else "🛑 Low"
-                })
-            st.table(pd.DataFrame(matrix))
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                    df_raw.to_excel(writer, index=False, sheet_name='RawData')
+                st.download_button("📥 Download Database (Excel)", data=output.getvalue(), file_name="CBHI_Master_Data.xlsx")
+    else:
+        st.warning("Please enter the correct password in the sidebar to access Admin tools.")
