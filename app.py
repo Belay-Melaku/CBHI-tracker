@@ -8,7 +8,7 @@ import io
 # --- 1. CONFIGURATION & TARGET DATA ---
 st.set_page_config(page_title="CBHI Tracker Pro", layout="wide", page_icon="📊")
 
-# Official Plan Data with "New" targets included
+# Official Plan Data (Targets)
 PLANS = {
     "01 Merged Health Post": {"high": 453, "medium": 551, "free": 474, "new": 251, "total": 1729},
     "02 Densa Zuriya Health Post": {"high": 147, "medium": 316, "free": 155, "new": 0, "total": 618},
@@ -33,7 +33,7 @@ def connect_to_gsheets():
         return None
 
 # --- 2. USER INTERFACE ---
-st.title("🏥 CBHI Performance Achievement System")
+st.title("🏥 CBHI Achievement Tracking System")
 menu = st.sidebar.selectbox("Main Menu", ["📝 Daily Entry", "📊 Performance Dashboard", "⚙️ Admin & Export"])
 
 # --- PAGE: DATA ENTRY ---
@@ -46,18 +46,18 @@ if menu == "📝 Daily Entry":
         inst = st.selectbox("Health Institution", INSTITUTIONS)
         date_rep = st.date_input("Reporting Date", datetime.now())
         
-        st.subheader("1. Membership Counts")
+        st.subheader("Membership Counts")
         r1, r2, r3, r4 = st.columns(4)
         h = r1.number_input("High", min_value=0)
         m = r2.number_input("Medium", min_value=0)
         f = r3.number_input("Free", min_value=0)
         n = r4.number_input("New", min_value=0)
         
-        # SMART MATH: Automated Financial Calculation
+        # Calculation: High*1710 + Medium*1260 + New*1260 (Free is 0 ETB)
         calc_coll = (h * 1710) + (m * 1260) + (n * 1260)
         
         st.divider()
-        st.subheader("2. Financial Verification")
+        st.subheader("Financial Verification")
         f1, f2 = st.columns(2)
         f1.metric("Calculated Collection (ETB)", f"{calc_coll:,.2f}")
         saved = f2.number_input("Amount Saved to Bank (ETB) *", min_value=0.0)
@@ -68,7 +68,7 @@ if menu == "📝 Daily Entry":
                 if sheet:
                     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
                     sheet.append_row([str(date_rep), reporter, phone, inst, h, m, f, n, calc_coll, saved, timestamp])
-                    st.success(f"✅ Data for {inst} has been successfully recorded!")
+                    st.success(f"✅ Data for {inst} has been recorded!")
                     st.balloons()
 
 # --- PAGE: PERFORMANCE DASHBOARD ---
@@ -80,7 +80,6 @@ elif menu == "📊 Performance Dashboard":
         df = pd.DataFrame(data)
         
         if not df.empty:
-            # Clean numeric data
             for col in ["High", "Medium", "Free", "New"]:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
@@ -93,50 +92,34 @@ elif menu == "📊 Performance Dashboard":
                 act = df[df["Health Institution"] == view][["High", "Medium", "Free", "New"]].sum()
                 plan = PLANS[view]
 
-            # Attractive Achievement Cards
             st.write(f"### Achievement Summary: {view}")
             cols = st.columns(4)
             metrics = [("High", "high"), ("Medium", "medium"), ("Free", "free"), ("New", "new")]
             for i, (label, key) in enumerate(metrics):
                 a_val, p_val = int(act[label]), plan[key]
                 perc = (a_val / p_val * 100) if p_val > 0 else 0
-                cols[i].metric(label, f"{a_val} / {p_val}", f"{perc:.1f}% Achieved")
+                cols[i].metric(label, f"{a_val} / {p_val}", f"{perc:.1f}%")
             
             st.divider()
             
-            # Detailed Performance Matrix Table
+            # REVISED MATRIX: Includes Free and Total Calculation (H+M+F+N)
             st.subheader("Institutional Performance Matrix")
             matrix = []
             for name, p in PLANS.items():
                 i_df = df[df["Health Institution"] == name]
                 i_act = i_df[["High", "Medium", "Free", "New"]].sum()
-                total_act = i_act.sum()
-                total_perc = (total_act / p["total"] * 100) if p["total"] > 0 else 0
+                
+                # Formula: (High + Medium + Free + New) / Total Plan
+                total_achieved = i_act["High"] + i_act["Medium"] + i_act["Free"] + i_act["New"]
+                total_perc = (total_achieved / p["total"] * 100) if p["total"] > 0 else 0
+                
                 matrix.append({
                     "Health Post": name,
-                    "High (Act/Plan)": f"{int(i_act['High'])} / {p['high']}",
-                    "Medium (Act/Plan)": f"{int(i_act['Medium'])} / {p['medium']}",
-                    "New (Act/Plan)": f"{int(i_act['New'])} / {p['new']}",
+                    "High (A/P)": f"{int(i_act['High'])}/{p['high']}",
+                    "Medium (A/P)": f"{int(i_act['Medium'])}/{p['medium']}",
+                    "Free (A/P)": f"{int(i_act['Free'])}/{p['free']}",
+                    "New (A/P)": f"{int(i_act['New'])}/{p['new']}",
                     "Total Perf %": f"{total_perc:.1f}%",
-                    "Health Status": "🟢 Excellent" if total_perc >= 90 else "🟡 Good" if total_perc >= 50 else "🔴 Action Required"
+                    "Status": "🟢 Excellent" if total_perc >= 90 else "🟡 Good" if total_perc >= 50 else "🛑 Low"
                 })
             st.table(pd.DataFrame(matrix))
-        else:
-            st.info("No data found in the system yet.")
-
-# --- PAGE: ADMIN ---
-elif menu == "⚙️ Admin & Export":
-    st.sidebar.markdown("---")
-    u, p = st.sidebar.text_input("User"), st.sidebar.text_input("Password", type="password")
-    if u == st.secrets["admin"]["user"] and p == st.secrets["admin"]["password"]:
-        sheet = connect_to_gsheets()
-        if sheet:
-            df_full = pd.DataFrame(sheet.get_all_records())
-            st.subheader("Master Record Explorer")
-            st.dataframe(df_full)
-            
-            # Export to Excel Logic
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_full.to_excel(writer, index=False)
-            st.download_button("📥 Download Master Data (Excel)", data=output.getvalue(), file_name="CBHI_Master_Database.xlsx")
