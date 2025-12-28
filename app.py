@@ -1,14 +1,15 @@
-﻿# -*- coding: utf-8 -*-
-import streamlit as st
+﻿import streamlit as st
 import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
-import plotly.express as px
+import yagmail
+import io
 
-# --- APP CONFIG ---
-st.set_page_config(page_title="CBHI Analytics", layout="wide")
+# --- 1. CONFIGURATION & PLAN DATA ---
+st.set_page_config(page_title="CBHI Performance Tracker", layout="wide", page_icon="📈")
 
+# Finalized Plan Data (High, Medium, Free, New)
 PLANS = {
     "01 Merged Health Post": {"high": 453, "medium": 551, "free": 474, "new": 251, "total": 1729},
     "02 Densa Zuriya Health Post": {"high": 147, "medium": 316, "free": 155, "new": 0, "total": 618},
@@ -19,7 +20,9 @@ PLANS = {
     "08 Alegeta Health Post": {"high": 217, "medium": 252, "free": 248, "new": 22, "total": 739},
     "09 Sensa Health Post": {"high": 173, "medium": 272, "free": 179, "new": 0, "total": 624}
 }
+INSTITUTIONS = list(PLANS.keys())
 
+# --- 2. DATABASE CONNECTION ---
 def connect_to_gsheets():
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -28,76 +31,103 @@ def connect_to_gsheets():
         client = gspread.authorize(creds)
         return client.open("CBHI_Data_Database").worksheet("Records")
     except Exception as e:
+        st.error(f"⚠️ Connection Error: {e}")
         return None
 
-# --- ADMIN LOGIN ---
-st.sidebar.title("🔐 Admin Login")
-u_name = st.sidebar.text_input("User Name")
-u_pass = st.sidebar.text_input("Password", type="password")
+# --- 3. UI NAVIGATION ---
+st.title("🏥 CBHI Achievement Tracking System")
+menu = st.sidebar.selectbox("Main Navigation", ["📝 Data Entry", "📊 Performance Dashboard", "⚙️ Admin & Export"])
 
-if u_name == st.secrets["admin"]["user"] and u_pass == st.secrets["admin"]["password"]:
-    st.sidebar.success("Access Granted")
-    menu = st.sidebar.selectbox("Navigation", ["📊 Performance Dashboard", "📝 Data Entry"])
-    
+# --- DATA ENTRY PAGE ---
+if menu == "📝 Data Entry":
+    st.header("Daily Achievement Entry")
+    with st.container(border=True):
+        col1, col2 = st.columns(2)
+        reporter = col1.text_input("Reporter Name *")
+        phone = col2.text_input("Phone Number *")
+        inst = st.selectbox("Health Institution", INSTITUTIONS)
+        date_rep = st.date_input("Report Date", datetime.now())
+        
+        st.divider()
+        st.subheader("1. Membership Achievement Counts")
+        r1, r2, r3, r4 = st.columns(4)
+        h_val = r1.number_input("High", min_value=0, step=1)
+        m_val = r2.number_input("Medium", min_value=0, step=1)
+        f_val = r3.number_input("Free", min_value=0, step=1)
+        n_val = r4.number_input("New", min_value=0, step=1)
+        
+        # Automated Calculation: High*1710 + Medium*1260 + New*1260
+        calc_money = (h_val * 1710) + (m_val * 1260) + (n_val * 1260)
+        
+        st.divider()
+        st.subheader("2. Financial Status")
+        f1, f2 = st.columns(2)
+        f1.metric("Calculated Collected (ETB)", f"{calc_money:,.2f}")
+        saved = f2.number_input("Actual Amount Saved to Bank (ETB) *", min_value=0.0)
+
+        if st.button("🚀 Submit Final Report"):
+            if not reporter or not phone:
+                st.error("Please fill in Name and Phone.")
+            else:
+                sheet = connect_to_gsheets()
+                if sheet:
+                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    new_row = [str(date_rep), reporter, phone, inst, h_val, m_val, f_val, n_val, calc_money, saved, timestamp]
+                    sheet.append_row(new_row)
+                    st.success(f"✅ Success! Report for {inst} has been synced to Google Sheets.")
+                    st.balloons()
+
+# --- PERFORMANCE DASHBOARD ---
+elif menu == "📊 Performance Dashboard":
+    st.header("Real-Time KPI Achievements")
     sheet = connect_to_gsheets()
     if sheet:
-        df = pd.DataFrame(sheet.get_all_records())
+        data = sheet.get_all_records()
+        df = pd.DataFrame(data)
         
-        if menu == "📊 Performance Dashboard":
-            st.title("📊 CBHI Multi-Metric Performance Tracker")
-            if not df.empty:
-                # Clean Data
-                cols = ["High", "Medium", "Free", "New"]
-                for c in cols: df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
-                
-                # --- TOP LEVEL METRICS ---
-                m1, m2, m3, m4 = st.columns(4)
-                for i, (label, key) in enumerate([("High", "high"), ("Medium", "medium"), ("Free", "free"), ("New", "new")]):
-                    act = df[label].sum()
-                    plan = sum(p[key] for p in PLANS.values())
-                    perc = (act / plan * 100) if plan > 0 else 0
-                    [m1, m2, m3, m4][i].metric(f"{label} Achievement", f"{int(act)}", f"{perc:.1f}%")
+        if not df.empty:
+            for col in ["High", "Medium", "Free", "New", "Collected (ETB)", "Saved to Bank (ETB)"]:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-                # --- PERFORMANCE GRAPH ---
-                st.subheader("Plan vs. Actual Comparison")
-                chart_list = []
-                for name, p in PLANS.items():
-                    act_sum = df[df["Health Institution"].str.contains(name[:2], na=False)][cols].sum().sum()
-                    chart_list.append({"Institution": name, "Type": "Plan", "Value": p["total"]})
-                    chart_list.append({"Institution": name, "Type": "Actual", "Value": act_sum})
-                
-                fig = px.bar(pd.DataFrame(chart_list), x="Institution", y="Value", color="Type", barmode="group")
-                st.plotly_chart(fig, use_container_width=True)
+            selected = st.selectbox("Filter by Health Post", ["Summary (All)"] + INSTITUTIONS)
+            
+            if selected == "Summary (All)":
+                actuals = df[["High", "Medium", "Free", "New"]].sum()
+                plans = {k: sum(p[k] for p in PLANS.values()) for k in ["high", "medium", "free", "new"]}
+                st.subheader("Global Achievement (All Institutions)")
+            else:
+                actuals = df[df["Health Institution"] == selected][["High", "Medium", "Free", "New"]].sum()
+                plans = PLANS[selected]
+                st.subheader(f"Performance Details: {selected}")
 
-                # --- DETAILED MATRIX ---
-                st.subheader("Institutional Percentage Breakdown")
-                matrix = []
-                for name, p in PLANS.items():
-                    i_df = df[df["Health Institution"].str.contains(name[:2], na=False)]
-                    i_act = i_df[cols].sum()
-                    matrix.append({
-                        "Institution": name,
-                        "High %": f"{(i_act['High']/p['high']*100):.1f}%" if p['high']>0 else "0%",
-                        "Med %": f"{(i_act['Medium']/p['medium']*100):.1f}%" if p['medium']>0 else "0%",
-                        "Free %": f"{(i_act['Free']/p['free']*100):.1f}%" if p['free']>0 else "0%",
-                        "New %": f"{(i_act['New']/p['new']*100):.1f}%" if p['new']>0 else "0%",
-                        "OVERALL %": f"{(i_act.sum()/p['total']*100):.1f}%"
-                    })
-                st.table(pd.DataFrame(matrix))
-
-        elif menu == "📝 Data Entry":
-            st.title("📝 Achievement Entry")
-            with st.form("entry"):
-                inst = st.selectbox("Institution", list(PLANS.keys()))
-                h = st.number_input("High", 0)
-                m = st.number_input("Medium", 0)
-                f = st.number_input("Free", 0)
-                n = st.number_input("New", 0)
-                if st.form_submit_button("Submit to Cloud"):
-                    calc = (h*1710) + (m*1260) + (n*1260)
-                    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    sheet.append_row([str(datetime.now().date()), u_name, "Admin", inst, h, m, f, n, calc, 0, ts])
-                    st.success("Synced Successfully!")
-else:
-    st.title("🏥 CBHI Achievement Tracking System")
-    st.info("Enter Admin credentials in the sidebar to begin.")
+            # Achievement Metrics
+            m1, m2, m3, m4 = st.columns(4)
+            metrics = [("High", "high"), ("Medium", "medium"), ("Free", "free"), ("New", "new")]
+            cols = [m1, m2, m3, m4]
+            
+            for i, (label, key) in enumerate(metrics):
+                act, plan = int(actuals[label]), plans[key]
+                perc = (act / plan * 100) if plan > 0 else 0
+                cols[i].metric(label, f"{act} / {plan}", f"{perc:.1f}% achievement")
+            
+            st.divider()
+            
+            # Master Performance Matrix
+            st.subheader("Institutional Performance Table")
+            matrix = []
+            for name, p in PLANS.items():
+                inst_df = df[df["Health Institution"] == name]
+                i_act = inst_df[["High", "Medium", "Free", "New"]].sum()
+                total_act = i_act.sum()
+                total_perc = (total_act / p["total"] * 100) if p["total"] > 0 else 0
+                matrix.append({
+                    "Institution": name,
+                    "High (Act/Plan)": f"{int(i_act['High'])} / {p['high']}",
+                    "Medium (Act/Plan)": f"{int(i_act['Medium'])} / {p['medium']}",
+                    "New (Act/Plan)": f"{int(i_act['New'])} / {p['new']}",
+                    "Status": "✅ Excellent" if total_perc >= 90 else "⚠️ Warning" if total_perc < 50 else "📊 Progressing",
+                    "Total Perf %": f"{total_perc:.1f}%"
+                })
+            st.table(pd.DataFrame(matrix))
+        else:
+            st.info("The database is currently empty. Please submit a report first.")
